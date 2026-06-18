@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""
-EOS CRM - Servidor MCP
-Permite a Claude acceder al CRM de EOS en tiempo real.
-"""
+"""EOS CRM - Servidor MCP. Permite a Claude acceder al CRM de EOS en tiempo real."""
 
-import os
-import json
+import os, json, uvicorn
 from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-# ─── Configuración (via variables de entorno en Railway) ────────────────────
 CRM_BASE = os.environ.get("CRM_BASE_URL", "https://crm-eos-production.up.railway.app")
 CRM_USER = os.environ.get("CRM_USERNAME", "admin")
 CRM_PASS = os.environ.get("CRM_PASSWORD", "")
 
-# ─── Servidor MCP ────────────────────────────────────────────────────────────
-_port = int(os.environ.get("PORT", 8000))
-mcp = FastMCP("EOS CRM", host="0.0.0.0", port=_port)
-
+mcp = FastMCP("EOS CRM")
 _auth_token: str | None = None
 
 
@@ -27,16 +19,13 @@ async def get_token() -> str:
     if _auth_token:
         return _auth_token
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{CRM_BASE}/api/auth/login",
-            json={"username": CRM_USER, "password": CRM_PASS},
-            timeout=10,
-        )
+        resp = await client.post(f"{CRM_BASE}/api/auth/login",
+            json={"username": CRM_USER, "password": CRM_PASS}, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         _auth_token = data.get("token") or data.get("access_token")
         if not _auth_token:
-            raise ValueError(f"Login fallido. Respuesta: {data}")
+            raise ValueError(f"Login fallido: {data}")
         return _auth_token
 
 
@@ -45,16 +34,14 @@ async def crm(method: str, path: str, **kwargs) -> Any:
     token = await get_token()
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            method, f"{CRM_BASE}/api{path}", headers=headers, timeout=15, **kwargs,
-        )
+        resp = await client.request(method, f"{CRM_BASE}/api{path}",
+            headers=headers, timeout=15, **kwargs)
         if resp.status_code == 401:
             _auth_token = None
             token = await get_token()
             headers = {"Authorization": f"Bearer {token}"}
-            resp = await client.request(
-                method, f"{CRM_BASE}/api{path}", headers=headers, timeout=15, **kwargs
-            )
+            resp = await client.request(method, f"{CRM_BASE}/api{path}",
+                headers=headers, timeout=15, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
@@ -62,16 +49,14 @@ async def crm(method: str, path: str, **kwargs) -> Any:
 @mcp.tool()
 async def listar_cuentas() -> str:
     """Lista todas las cuentas (clientes y prospectos) del CRM de EOS."""
-    data = await crm("GET", "/accounts")
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    return json.dumps(await crm("GET", "/accounts"), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
 async def listar_contactos(account_id: int | None = None) -> str:
-    """Lista los contactos del CRM. Si se indica account_id, filtra por esa cuenta."""
+    """Lista contactos del CRM. Si se indica account_id, filtra por esa cuenta."""
     path = f"/contacts?account_id={account_id}" if account_id else "/contacts"
-    data = await crm("GET", path)
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    return json.dumps(await crm("GET", path), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -95,45 +80,39 @@ async def listar_acciones(estado: str = "todas") -> str:
 @mcp.tool()
 async def listar_notas() -> str:
     """Lista todas las anotaciones del CRM."""
-    data = await crm("GET", "/notes")
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    return json.dumps(await crm("GET", "/notes"), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
 async def obtener_estadisticas() -> str:
-    """Resumen de actividad: cuentas totales, visitas del mes, acciones pendientes."""
-    data = await crm("GET", "/admin/stats")
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    """Resumen: cuentas totales, visitas del mes, acciones pendientes y vencidas."""
+    return json.dumps(await crm("GET", "/admin/stats"), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
-async def crear_visita(
-    account_id: int, fecha: str, tipo: str, resumen: str, resultado: str,
-    proxima_accion: str = "", productos_hablados: str = "",
-) -> str:
-    """Registra una visita comercial. tipo: 'presencial'/'telefonica'. resultado: 'pendiente'/'cerrado'/'no_interesado'."""
-    data = await crm("POST", "/visits", json={
+async def crear_visita(account_id: int, fecha: str, tipo: str, resumen: str,
+    resultado: str, proxima_accion: str = "", productos_hablados: str = "") -> str:
+    """Registra una visita. tipo: 'presencial'/'telefonica'. resultado: 'pendiente'/'cerrado'/'no_interesado'."""
+    return json.dumps(await crm("POST", "/visits", json={
         "account_id": account_id, "date": fecha, "type": tipo,
         "summary": resumen, "result": resultado,
         "next_action": proxima_accion, "products_discussed": productos_hablados,
-    })
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    }), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
-async def crear_accion(
-    titulo: str, account_id: int, fecha_limite: str,
-    prioridad: str = "media", descripcion: str = "",
-) -> str:
+async def crear_accion(titulo: str, account_id: int, fecha_limite: str,
+    prioridad: str = "media", descripcion: str = "") -> str:
     """Crea una tarea de seguimiento. prioridad: 'alta'/'media'/'baja'."""
-    data = await crm("POST", "/actions", json={
-        "title": titulo, "account_id": account_id,
-        "due_date": fecha_limite, "priority": prioridad,
-        "description": descripcion, "status": "pendiente",
-    })
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    return json.dumps(await crm("POST", "/actions", json={
+        "title": titulo, "account_id": account_id, "due_date": fecha_limite,
+        "priority": prioridad, "description": descripcion, "status": "pendiente",
+    }), ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
-    print(f"EOS CRM MCP Server arrancando en puerto {_port}...")
-    mcp.run(transport="sse")
+    port = int(os.environ.get("PORT", 8000))
+    print(f"EOS CRM MCP Server arrancando en puerto {port}...")
+    # Usar uvicorn directamente para control total de host/port
+    app = mcp.get_app()
+    uvicorn.run(app, host="0.0.0.0", port=port)
