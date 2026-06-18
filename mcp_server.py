@@ -6,18 +6,23 @@ Permite a Claude acceder al CRM de EOS en tiempo real.
 
 import os
 import json
+from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+# ─── Configuración (via variables de entorno en Railway) ────────────────────
 CRM_BASE = os.environ.get("CRM_BASE_URL", "https://crm-eos-production.up.railway.app")
 CRM_USER = os.environ.get("CRM_USERNAME", "admin")
 CRM_PASS = os.environ.get("CRM_PASSWORD", "")
 
-mcp = FastMCP("EOS CRM")
-_auth_token = None
+# ─── Servidor MCP ────────────────────────────────────────────────────────────
+_port = int(os.environ.get("PORT", 8000))
+mcp = FastMCP("EOS CRM", host="0.0.0.0", port=_port)
+
+_auth_token: str | None = None
 
 
-async def get_token():
+async def get_token() -> str:
     global _auth_token
     if _auth_token:
         return _auth_token
@@ -31,17 +36,17 @@ async def get_token():
         data = resp.json()
         _auth_token = data.get("token") or data.get("access_token")
         if not _auth_token:
-            raise ValueError(f"Login fallido: {data}")
+            raise ValueError(f"Login fallido. Respuesta: {data}")
         return _auth_token
 
 
-async def crm(method, path, **kwargs):
+async def crm(method: str, path: str, **kwargs) -> Any:
     global _auth_token
     token = await get_token()
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient() as client:
         resp = await client.request(
-            method, f"{CRM_BASE}/api{path}", headers=headers, timeout=15, **kwargs
+            method, f"{CRM_BASE}/api{path}", headers=headers, timeout=15, **kwargs,
         )
         if resp.status_code == 401:
             _auth_token = None
@@ -55,23 +60,23 @@ async def crm(method, path, **kwargs):
 
 
 @mcp.tool()
-async def listar_cuentas():
-    """Lista todas las cuentas del CRM de EOS (clientes y prospectos)."""
+async def listar_cuentas() -> str:
+    """Lista todas las cuentas (clientes y prospectos) del CRM de EOS."""
     data = await crm("GET", "/accounts")
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
-async def listar_contactos(account_id=None):
-    """Lista los contactos. Si se indica account_id, filtra por esa cuenta."""
+async def listar_contactos(account_id: int | None = None) -> str:
+    """Lista los contactos del CRM. Si se indica account_id, filtra por esa cuenta."""
     path = f"/contacts?account_id={account_id}" if account_id else "/contacts"
     data = await crm("GET", path)
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
-async def listar_visitas(limite=20):
-    """Lista las ultimas visitas comerciales registradas en el CRM."""
+async def listar_visitas(limite: int = 20) -> str:
+    """Lista las ultimas visitas comerciales registradas."""
     data = await crm("GET", "/visits")
     if isinstance(data, list):
         data = data[:limite]
@@ -79,7 +84,7 @@ async def listar_visitas(limite=20):
 
 
 @mcp.tool()
-async def listar_acciones(estado="todas"):
+async def listar_acciones(estado: str = "todas") -> str:
     """Lista acciones/tareas. estado: 'pendiente', 'hecha', o 'todas'."""
     data = await crm("GET", "/actions")
     if isinstance(data, list) and estado != "todas":
@@ -88,27 +93,25 @@ async def listar_acciones(estado="todas"):
 
 
 @mcp.tool()
-async def listar_notas():
+async def listar_notas() -> str:
     """Lista todas las anotaciones del CRM."""
     data = await crm("GET", "/notes")
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
-async def obtener_estadisticas():
-    """Resumen: cuentas totales, visitas del mes, acciones pendientes y vencidas."""
+async def obtener_estadisticas() -> str:
+    """Resumen de actividad: cuentas totales, visitas del mes, acciones pendientes."""
     data = await crm("GET", "/admin/stats")
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
-async def crear_visita(account_id, fecha, tipo, resumen, resultado, proxima_accion="", productos_hablados=""):
-    """
-    Registra una visita comercial.
-    tipo: 'presencial' o 'telefonica'
-    resultado: 'pendiente', 'cerrado' o 'no_interesado'
-    fecha: formato YYYY-MM-DDTHH:MM
-    """
+async def crear_visita(
+    account_id: int, fecha: str, tipo: str, resumen: str, resultado: str,
+    proxima_accion: str = "", productos_hablados: str = "",
+) -> str:
+    """Registra una visita comercial. tipo: 'presencial'/'telefonica'. resultado: 'pendiente'/'cerrado'/'no_interesado'."""
     data = await crm("POST", "/visits", json={
         "account_id": account_id, "date": fecha, "type": tipo,
         "summary": resumen, "result": resultado,
@@ -118,12 +121,11 @@ async def crear_visita(account_id, fecha, tipo, resumen, resultado, proxima_acci
 
 
 @mcp.tool()
-async def crear_accion(titulo, account_id, fecha_limite, prioridad="media", descripcion=""):
-    """
-    Crea una tarea de seguimiento.
-    prioridad: 'alta', 'media' o 'baja'
-    fecha_limite: formato YYYY-MM-DD
-    """
+async def crear_accion(
+    titulo: str, account_id: int, fecha_limite: str,
+    prioridad: str = "media", descripcion: str = "",
+) -> str:
+    """Crea una tarea de seguimiento. prioridad: 'alta'/'media'/'baja'."""
     data = await crm("POST", "/actions", json={
         "title": titulo, "account_id": account_id,
         "due_date": fecha_limite, "priority": prioridad,
@@ -133,6 +135,5 @@ async def crear_accion(titulo, account_id, fecha_limite, prioridad="media", desc
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    print(f"EOS CRM MCP Server arrancando en puerto {port}...")
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    print(f"EOS CRM MCP Server arrancando en puerto {_port}...")
+    mcp.run(transport="sse")
