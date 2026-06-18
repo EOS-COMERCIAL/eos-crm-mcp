@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """EOS CRM - Servidor MCP. Permite a Claude acceder al CRM de EOS en tiempo real."""
 
-import os, json, uvicorn
+import os, json
 from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -111,8 +111,28 @@ async def crear_accion(titulo: str, account_id: int, fecha_limite: str,
 
 
 if __name__ == "__main__":
+    import uvicorn
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Mount, Route
+
     port = int(os.environ.get("PORT", 8000))
     print(f"EOS CRM MCP Server arrancando en puerto {port}...")
-    # Usar uvicorn directamente para control total de host/port
-    app = mcp.get_app()
+
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await mcp._mcp_server.run(
+                streams[0], streams[1],
+                mcp._mcp_server.create_initialization_options(),
+            )
+
+    app = Starlette(routes=[
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages/", app=sse.handle_post_message),
+    ])
+
     uvicorn.run(app, host="0.0.0.0", port=port)
